@@ -1,0 +1,6 @@
+## Interface: 11200
+## Title: GCDSwap
+## Notes: Event-driven weapon swap during GCD for Turtle WoW
+## Author: Livin
+## SavedVariables: GCDSwapDB
+gcdswap.lua
