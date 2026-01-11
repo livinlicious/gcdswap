@@ -1,11 +1,16 @@
 --[[
-    GCDSwap: Event-Driven Weapon Swap for Turtle WoW
+    GCDSwap: Event-Driven Equipment Swap for Turtle WoW
 
     Concept:
-    1. ARM: User types /gcdswap to arm the trap (Queue = true)
+    1. ARM: User types /gcdswap <preset> to arm the trap (Queue = true)
     2. LISTEN: Addon listens for SPELLCAST_STOP event
-    3. SWAP: On instant spell cast, swap MainHand <-> Bag(0,1) during GCD
+    3. SWAP: On instant spell cast, swap equipment during GCD
     4. DISARM: Queue = false, stop listening
+
+    Supports:
+    - Weapons (MainHand, OffHand)
+    - Shields (OffHand)
+    - Relics (Ranged slot): Totems, Idols, Librams
 
     Why this works:
     - SPELLCAST_STOP fires when GCD starts (safe window)
@@ -38,6 +43,8 @@ local currentPreset = nil
 ------------------------------------------------------
 
 local MAINHAND_SLOT = 16
+local OFFHAND_SLOT = 17
+local RANGED_SLOT = 18  -- Also used for relics (totems, idols, librams)
 
 ------------------------------------------------------
 -- DEBUG UTILITIES
@@ -66,9 +73,14 @@ local function GetBagItemLink(bag, slot)
     return GetContainerItemLink(bag, slot)
 end
 
--- Get equipped mainhand item link
+-- Get equipped item link from any slot
+local function GetEquippedItemLink(slot)
+    return GetInventoryItemLink("player", slot)
+end
+
+-- Get equipped mainhand item link (backwards compatibility)
 local function GetMainHandLink()
-    return GetInventoryItemLink("player", MAINHAND_SLOT)
+    return GetEquippedItemLink(MAINHAND_SLOT)
 end
 
 -- Extract item name from item link
@@ -97,41 +109,61 @@ local function FindItemInBags(itemName)
     return nil, nil
 end
 
--- Check if item is equipped in mainhand
-local function IsEquippedInMainHand(itemName)
+-- Check if item is equipped in a specific slot
+local function IsEquippedInSlot(itemName, slot)
     if not itemName then return false end
-    local mainHandLink = GetMainHandLink()
-    local equippedName = GetItemNameFromLink(mainHandLink)
+    local equippedLink = GetEquippedItemLink(slot)
+    local equippedName = GetItemNameFromLink(equippedLink)
     return equippedName and string.lower(equippedName) == string.lower(itemName)
+end
+
+-- Check if item is equipped in mainhand (backwards compatibility)
+local function IsEquippedInMainHand(itemName)
+    return IsEquippedInSlot(itemName, MAINHAND_SLOT)
+end
+
+-- Find which slot an item is equipped in (returns slot number or nil)
+local function FindEquippedSlot(itemName)
+    if not itemName then return nil end
+    itemName = string.lower(itemName)
+
+    -- Check all three swappable slots
+    for _, slot in ipairs({MAINHAND_SLOT, OFFHAND_SLOT, RANGED_SLOT}) do
+        if IsEquippedInSlot(itemName, slot) then
+            return slot
+        end
+    end
+
+    return nil
 end
 
 ------------------------------------------------------
 -- PRESET MANAGEMENT
 ------------------------------------------------------
 
-local function SavePreset(name, weapon1, weapon2)
+local function SavePreset(name, item1, item2)
     if not name or name == "" then
         ErrorMsg("Preset name cannot be empty")
         return false
     end
 
-    if not weapon1 or not weapon2 then
-        ErrorMsg("Both weapon names required")
+    if not item1 or not item2 then
+        ErrorMsg("Both item names required")
         return false
     end
 
-    weapon1 = string.lower(weapon1)
-    weapon2 = string.lower(weapon2)
+    item1 = string.lower(item1)
+    item2 = string.lower(item2)
 
     GCDSwapDB.presets[string.lower(name)] = {
-        weapon1 = weapon1,
-        weapon2 = weapon2
+        weapon1 = item1,  -- Keep old field names for compatibility
+        weapon2 = item2
     }
 
     PrintMsg("Preset '" .. name .. "' saved:")
-    PrintMsg("  Weapon1 (normal): " .. weapon1)
-    PrintMsg("  Weapon2 (GCD swap): " .. weapon2)
-    DebugMsg("Saved as: [" .. weapon1 .. "] <-> [" .. weapon2 .. "]")
+    PrintMsg("  Item1 (normal): " .. item1)
+    PrintMsg("  Item2 (GCD swap): " .. item2)
+    DebugMsg("Saved as: [" .. item1 .. "] <-> [" .. item2 .. "]")
     return true
 end
 
@@ -190,11 +222,14 @@ end
 ------------------------------------------------------
 
 -- Perform the swap using bag/slot method
-local function SwapWeaponBySlot(bag, slot)
+local function SwapWeaponBySlot(bag, slot, equipSlot)
     if swapInProgress then
         DebugMsg("Swap already in progress, ignoring")
         return false
     end
+
+    -- Default to mainhand if not specified
+    equipSlot = equipSlot or MAINHAND_SLOT
 
     -- Validate bag/slot exists and has item
     local bagItemLink = GetBagItemLink(bag, slot)
@@ -203,28 +238,31 @@ local function SwapWeaponBySlot(bag, slot)
         return false
     end
 
-    -- Get mainhand info
-    local mainHandLink = GetMainHandLink()
-    if not mainHandLink then
-        DebugMsg("No weapon equipped in mainhand")
+    -- Get equipped item info
+    local equippedLink = GetEquippedItemLink(equipSlot)
+    if not equippedLink then
+        DebugMsg("No item equipped in slot " .. equipSlot)
     end
 
     swapInProgress = true
 
-    DebugMsg("Swapping MainHand <-> Bag(" .. bag .. "," .. slot .. ")")
+    local slotName = equipSlot == MAINHAND_SLOT and "MainHand" or
+                     equipSlot == OFFHAND_SLOT and "OffHand" or
+                     equipSlot == RANGED_SLOT and "Ranged/Relic" or "Slot" .. equipSlot
+    DebugMsg("Swapping " .. slotName .. " <-> Bag(" .. bag .. "," .. slot .. ")")
 
     -- Pick up item from bag
     PickupContainerItem(bag, slot)
 
-    -- Equip to mainhand (this puts current mainhand into cursor if exists)
-    PickupInventoryItem(MAINHAND_SLOT)
+    -- Equip to slot (this puts current equipped item into cursor if exists)
+    PickupInventoryItem(equipSlot)
 
-    -- Place cursor item (old mainhand) back to bag slot
+    -- Place cursor item (old equipped item) back to bag slot
     PickupContainerItem(bag, slot)
 
     swapInProgress = false
 
-    DebugMsg("Weapon swapped!")
+    DebugMsg("Item swapped!")
 
     if GCDSwapDB.sound then
         PlaySound("igMainMenuOptionCheckBoxOn")
@@ -233,7 +271,7 @@ local function SwapWeaponBySlot(bag, slot)
     return true
 end
 
--- Perform the swap using preset (weapon names)
+-- Perform the swap using preset (item names)
 local function SwapWeaponByPreset()
     if swapInProgress then
         DebugMsg("Swap already in progress, ignoring")
@@ -245,58 +283,72 @@ local function SwapWeaponByPreset()
         return false
     end
 
-    local weapon1 = currentPreset.weapon1
-    local weapon2 = currentPreset.weapon2
+    local item1 = currentPreset.weapon1  -- Keep old field names for compatibility
+    local item2 = currentPreset.weapon2
 
-    -- Check which weapon is currently equipped
-    local mainHandLink = GetMainHandLink()
-    local equippedName = GetItemNameFromLink(mainHandLink)
+    -- Find which slot item1 or item2 is equipped in
+    local equippedSlot = FindEquippedSlot(item1)
+    if not equippedSlot then
+        equippedSlot = FindEquippedSlot(item2)
+    end
 
-    DebugMsg("Currently equipped: [" .. (equippedName or "nothing") .. "]")
-    DebugMsg("Looking for weapon1: [" .. weapon1 .. "]")
-    DebugMsg("Looking for weapon2: [" .. weapon2 .. "]")
-
-    local weapon1Equipped = IsEquippedInMainHand(weapon1)
-    local weapon2Equipped = IsEquippedInMainHand(weapon2)
-
-    DebugMsg("Weapon1 match: " .. tostring(weapon1Equipped))
-    DebugMsg("Weapon2 match: " .. tostring(weapon2Equipped))
-
-    local targetWeapon = nil
-    if weapon1Equipped then
-        -- Weapon1 is equipped, swap to Weapon2
-        targetWeapon = weapon2
-    elseif weapon2Equipped then
-        -- Weapon2 is equipped, swap back to Weapon1
-        targetWeapon = weapon1
-    else
-        ErrorMsg("Neither preset weapon is equipped!")
+    if not equippedSlot then
+        ErrorMsg("Neither preset item is equipped in any slot!")
+        DebugMsg("Looking for: [" .. item1 .. "] or [" .. item2 .. "]")
         return false
     end
 
-    -- Find target weapon in bags
-    local bag, slot = FindItemInBags(targetWeapon)
+    local equippedLink = GetEquippedItemLink(equippedSlot)
+    local equippedName = GetItemNameFromLink(equippedLink)
+
+    local slotName = equippedSlot == MAINHAND_SLOT and "MainHand" or
+                     equippedSlot == OFFHAND_SLOT and "OffHand" or
+                     equippedSlot == RANGED_SLOT and "Ranged/Relic" or "Slot" .. equippedSlot
+    DebugMsg("Found equipped in " .. slotName .. ": [" .. (equippedName or "nothing") .. "]")
+    DebugMsg("Looking for item1: [" .. item1 .. "]")
+    DebugMsg("Looking for item2: [" .. item2 .. "]")
+
+    local item1Equipped = IsEquippedInSlot(item1, equippedSlot)
+    local item2Equipped = IsEquippedInSlot(item2, equippedSlot)
+
+    DebugMsg("Item1 match: " .. tostring(item1Equipped))
+    DebugMsg("Item2 match: " .. tostring(item2Equipped))
+
+    local targetItem = nil
+    if item1Equipped then
+        -- Item1 is equipped, swap to Item2
+        targetItem = item2
+    elseif item2Equipped then
+        -- Item2 is equipped, swap back to Item1
+        targetItem = item1
+    else
+        ErrorMsg("Neither preset item is equipped!")
+        return false
+    end
+
+    -- Find target item in bags
+    local bag, slot = FindItemInBags(targetItem)
     if not bag then
-        ErrorMsg("Cannot find '" .. targetWeapon .. "' in bags!")
+        ErrorMsg("Cannot find '" .. targetItem .. "' in bags!")
         return false
     end
 
     swapInProgress = true
 
-    DebugMsg("Swapping to: " .. targetWeapon .. " from Bag(" .. bag .. "," .. slot .. ")")
+    DebugMsg("Swapping to: " .. targetItem .. " from Bag(" .. bag .. "," .. slot .. ")")
 
     -- Pick up item from bag
     PickupContainerItem(bag, slot)
 
-    -- Equip to mainhand (this puts current mainhand into cursor)
-    PickupInventoryItem(MAINHAND_SLOT)
+    -- Equip to the same slot (this puts current equipped item into cursor)
+    PickupInventoryItem(equippedSlot)
 
-    -- Place cursor item (old mainhand) back to bag slot
+    -- Place cursor item (old equipped item) back to bag slot
     PickupContainerItem(bag, slot)
 
     swapInProgress = false
 
-    DebugMsg("Swapped to: " .. targetWeapon)
+    DebugMsg("Swapped to: " .. targetItem)
 
     if GCDSwapDB.sound then
         PlaySound("igMainMenuOptionCheckBoxOn")
@@ -444,18 +496,19 @@ SlashCmdList["GCDSWAP"] = function(msg)
     local cmd = string.lower(args[1] or "")
 
     if cmd == "save" then
-        -- /gcdswap save <name> [Weapon1] [Weapon2]
+        -- /gcdswap save <name> [Item1] [Item2]
         local name = args[2]
-        local weapon1 = CleanItemName(args[3])
-        local weapon2 = CleanItemName(args[4])
+        local item1 = CleanItemName(args[3])
+        local item2 = CleanItemName(args[4])
 
-        if not name or not weapon1 or not weapon2 then
-            ErrorMsg("Usage: /gcdswap save <name> [Weapon1] [Weapon2]")
-            ErrorMsg("Example: /gcdswap save abc [Aurastone Hammer] [Mace of Unending Life]")
+        if not name or not item1 or not item2 then
+            ErrorMsg("Usage: /gcdswap save <name> [Item1] [Item2]")
+            ErrorMsg("Example: /gcdswap save weps [Aurastone Hammer] [Mace of Unending Life]")
+            ErrorMsg("Example: /gcdswap save totems [Totem of Sustaining] [Totem of Rage]")
             return
         end
 
-        SavePreset(name, weapon1, weapon2)
+        SavePreset(name, item1, item2)
 
     elseif cmd == "delete" then
         local name = args[2]
@@ -502,12 +555,14 @@ SlashCmdList["GCDSWAP"] = function(msg)
     elseif cmd == "help" then
         PrintMsg("GCDSwap Commands:")
         PrintMsg("  /gcdswap <preset> - Arm swap with preset")
-        PrintMsg("  /gcdswap save <name> [Weapon1] [Weapon2]")
+        PrintMsg("  /gcdswap save <name> [Item1] [Item2]")
         PrintMsg("  /gcdswap delete <name>")
         PrintMsg("  /gcdswap list")
         PrintMsg("  /gcdswap status")
         PrintMsg("  /gcdswap debug - Toggle debug")
         PrintMsg("  /gcdswap sound - Toggle sound")
+        PrintMsg("")
+        PrintMsg("Works with: Weapons, Shields, Totems, Idols, Librams")
 
     else
         -- Treat as preset name

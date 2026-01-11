@@ -1,6 +1,6 @@
 ## Interface: 11200
 ## Title: GCDSwap
-## Notes: Event-driven weapon swap during GCD for Turtle WoW
+## Notes: Event-driven equipment swap during GCD for Turtle WoW (weapons, shields, totems, idols, librams)
 ## Author: Livin
 ## SavedVariables: GCDSwapDB
 gcdswap.lua
